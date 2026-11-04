@@ -1,0 +1,70 @@
+name: Blacksmith benchmark
+
+# Runs the same Rust build + test on GitHub's runner and Blacksmith's runner,
+# once with no cache ("cold") and once with a cache ("warm").
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: ${{ matrix.runner }} / ${{ matrix.cache }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, blacksmith-4vcpu-ubuntu-2404]
+        cache: [cold, warm]
+    env:
+      CARGO_TERM_COLOR: always
+      # Same setting Barter's own CI uses to avoid a linker overflow on CI runners
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Record start time
+        run: echo "BENCH_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install || rustup show
+          rustc --version
+
+      - name: Restore cache (warm only)
+        if: matrix.cache == 'warm'
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.runner }}
+
+      - name: Compile (cargo test --no-run)
+        run: |
+          s=$(date +%s)
+          cargo test --workspace --no-run
+          echo "COMPILE_SECS=$(( $(date +%s) - s ))" >> "$GITHUB_ENV"
+
+      - name: Run tests (cargo test)
+        run: |
+          s=$(date +%s)
+          cargo test --workspace
+          echo "TEST_SECS=$(( $(date +%s) - s ))" >> "$GITHUB_ENV"
+
+      - name: Report timings
+        if: always()
+        run: |
+          total=$(( $(date +%s) - BENCH_START ))
+          line="BENCH runner=${{ matrix.runner }} cache=${{ matrix.cache }} cpus=$(nproc) compile=${COMPILE_SECS:-NA}s test=${TEST_SECS:-NA}s total=${total}s"
+          echo "$line"
+          {
+            echo "### ${{ matrix.runner }} / ${{ matrix.cache }}"
+            echo "| CPUs | Compile | Tests | Total |"
+            echo "|---|---|---|---|"
+            echo "| $(nproc) | ${COMPILE_SECS:-NA}s | ${TEST_SECS:-NA}s | ${total}s |"
+          } >> "$GITHUB_STEP_SUMMARY"
